@@ -266,78 +266,7 @@ pip install numpy pandas scikit-learn biopython
 pip install fair-esm
 ```
 
-## Model Architecture
 
-```
-Input: Protein sequence + Predicted 3D structure
-       ↓
-┌──────────────────────────────────────────┐
-│  Node Features:                          │
-│  - One-hot amino acid encoding (20-dim)  │
-│  - ESM embedding (projected to 256-dim)  │
-│  - Positional encoding (32-dim)          │
-└──────────────────────────────────────────┘
-       ↓
-┌──────────────────────────────────────────┐
-│  Graph Construction:                     │
-│  - Sequential edges (i → i+1)            │
-│  - Structure edges (Cα-Cα < 8Å)          │
-└──────────────────────────────────────────┘
-       ↓
-┌──────────────────────────────────────────┐
-│  Edge-Type Separation GNN:               │
-│  - Sequence branch (GCN × 3 layers)      │
-│  - Structure branch (GCN × 3 layers)     │
-│  - Learnable α fusion                    │
-└──────────────────────────────────────────┘
-       ↓
-┌──────────────────────────────────────────┐
-│  Attention Pooling:                      │
-│  - Gated attention weights               │
-│  - Top-k residue aggregation             │
-│  - Mean/Max pooling fusion               │
-└──────────────────────────────────────────┘
-       ↓
-┌──────────────────────────────────────────┐
-│  Prediction Head:                        │
-│  - MLP classifier                        │
-│  - Sigmoid activation                    │
-└──────────────────────────────────────────┘
-       ↓
-Output: Protective antigen probability
-```
-
-## Benchmark Results
-
-### Performance on PAPReC Benchmark
-
-| Dataset | AUROC | AUPRC |
-|---------|-------|-------|
-| Bcipep | 0.82 | 0.96 |
-| HLA | 0.75 | 0.44 |
-| Protein | 0.96 | 0.96 |
-| Epitope | 0.86 | 0.86 |
-
-### Performance on ImmunoDB Benchmark
-
-| Dataset | AUROC | AUPRC | F1 |
-|---------|-------|-------|-----|
-| Bacteria | 0.89 | 0.82 | 0.77 |
-| Virus | 0.97 | 0.97 | 0.92 |
-| Tumor | 0.87 | 0.81 | 0.77 |
-
-## Citation
-
-If you use PU-GRAIL in your research, please cite:
-
-```bibtex
-@article{jeon2025pugrail,
-  title={PU-GRAIL: A Graph Neural Network Framework for Protective Antigen Prediction under Positive-Unlabeled Learning},
-  author={Jeon, Jaemin and others},
-  journal={Bioinformatics},
-  year={2025}
-}
-```
 
 ## License
 
