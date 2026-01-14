@@ -1,0 +1,19 @@
+# PU-GRAIL Requirements
+# Python >= 3.8
+
+# Core dependencies
+torch>=1.12.0
+torch-geometric>=2.3.0
+numpy>=1.21.0
+pandas>=1.3.0
+scikit-learn>=1.0.0
+
+# Protein structure parsing
+biopython>=1.79
+
+# Optional: for ESM embedding generation
+# fair-esm>=2.0.0
+
+# Optional: for structure prediction
+# openfold>=1.0.0
+
