@@ -1,2 +1,303 @@
-readme
-dfsdf
+# PU-GRAIL
+
+**PU-GRAIL**: A Graph Neural Network Framework for Protective Antigen Prediction under Positive-Unlabeled Learning
+
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-1.12+-red.svg)](https://pytorch.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## Overview
+
+PU-GRAIL is a graph neural network framework that integrates protein language model embeddings with predicted 3D structures for protective antigen prediction. The model addresses two key challenges in computational vaccinology:
+
+1. **Positive-Unlabeled (PU) Learning**: Handles the inherent label uncertainty where unannotated proteins may contain undiscovered protective antigens
+2. **Structure-Sequence Integration**: Captures both local sequence context and long-range structural contacts critical for epitope recognition
+
+### Key Features
+
+- **Edge-type separation**: Separately encodes sequential and structural connectivity with learnable fusion weights
+- **ESM embedding projection**: Projects high-dimensional ESM embeddings to a lower-dimensional space for efficient learning
+- **Attention-based pooling**: Identifies important residues contributing to antigenicity
+- **Multiple loss functions**: Combines PU-AUC loss, node separation loss, and graph contrastive loss
+
+## Installation
+
+### Requirements
+
+- Python >= 3.8
+- PyTorch >= 1.12.0
+- PyTorch Geometric >= 2.3.0
+
+### Install from source
+
+```bash
+git clone https://github.com/jaeminjj/PU-GRAIL.git
+cd PU-GRAIL
+pip install -r requirements.txt
+pip install -e .
+```
+
+### Install dependencies
+
+```bash
+# Install PyTorch (adjust for your CUDA version)
+pip install torch torchvision torchaudio
+
+# Install PyTorch Geometric
+pip install torch-geometric
+
+# Install other dependencies
+pip install numpy pandas scikit-learn biopython
+```
+
+## Data Preparation
+
+### Required Input Files
+
+1. **CSV file** with columns:
+   - `id_short`: Protein identifier
+   - `label`: Binary label (1 = protective antigen, 0 = unlabeled/negative)
+   - `fold`: Cross-validation fold number
+   - `split`: Data split (train/valid/test)
+
+2. **PDB files**: Predicted or experimental protein structures
+   - Directory containing `{id_short}.pdb` files
+
+3. **ESM embeddings**: Pre-computed ESM embeddings
+   - Directory containing `{id_short}.npy` files
+   - Shape: (L+2, D) where L is sequence length and D is embedding dimension
+
+### Example CSV format
+
+```csv
+id_short,label,fold,split
+protein_001,1,0,train
+protein_002,0,0,train
+protein_003,1,0,test
+...
+```
+
+### Generating ESM Embeddings
+
+```python
+import torch
+import esm
+import numpy as np
+
+# Load ESM model
+model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+batch_converter = alphabet.get_batch_converter()
+model.eval()
+
+# Generate embedding for a sequence
+sequence = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
+data = [("protein", sequence)]
+batch_labels, batch_strs, batch_tokens = batch_converter(data)
+
+with torch.no_grad():
+    results = model(batch_tokens, repr_layers=[33])
+    embeddings = results["representations"][33].numpy()
+
+# Save embedding
+np.save("protein.npy", embeddings[0])  # Shape: (L+2, 1280)
+```
+
+### Generating Structure Predictions
+
+You can use ESMFold, OmegaFold, or AlphaFold2 to predict structures:
+
+```python
+import esm
+
+# Using ESMFold
+model = esm.pretrained.esmfold_v1()
+model = model.eval().cuda()
+
+sequence = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
+with torch.no_grad():
+    output = model.infer_pdb(sequence)
+
+with open("protein.pdb", "w") as f:
+    f.write(output)
+```
+
+## Usage
+
+### Training
+
+```bash
+python -m pugrail.train \
+    --csv_path /path/to/data.csv \
+    --pdb_dir /path/to/pdb/ \
+    --esm_dir /path/to/esm/ \
+    --output_dir /path/to/output/ \
+    --batch_size 16 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --pu_loss puauc \
+    --hidden_dim 128 \
+    --gnn_layers 3
+```
+
+### Command Line Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--csv_path` | required | Path to CSV file with data |
+| `--pdb_dir` | required | Directory containing PDB files |
+| `--esm_dir` | required | Directory containing ESM embeddings |
+| `--output_dir` | `./output` | Output directory |
+| `--batch_size` | 16 | Batch size |
+| `--lr` | 1e-4 | Learning rate |
+| `--epochs` | 100 | Maximum epochs |
+| `--patience` | 5 | Early stopping patience |
+| `--hidden_dim` | 128 | Hidden dimension |
+| `--gnn_layers` | 3 | Number of GNN layers |
+| `--pu_loss` | `puauc` | Loss type: `puauc`, `nnpu`, or `bce` |
+| `--task_loss_weight` | 1.0 | Weight for task loss |
+| `--node_loss_weight` | 0.3 | Weight for node separation loss |
+| `--contrastive_loss_weight` | 0.1 | Weight for contrastive loss |
+
+### Python API
+
+```python
+from pugrail import PUGRAIL, ProteinGraphDataset
+import torch
+from torch_geometric.loader import DataLoader
+
+# Load dataset
+dataset = ProteinGraphDataset(
+    df=df_train,
+    pdb_dir="/path/to/pdb/",
+    esm_dir="/path/to/esm/",
+)
+
+# Create model
+model = PUGRAIL(
+    in_dim=dataset[0].x.shape[1],
+    hid=128,
+    gnn_layers=3,
+    use_edge_separation=True,
+)
+
+# Forward pass
+loader = DataLoader(dataset, batch_size=16)
+for batch in loader:
+    logits = model(batch)
+    probs = torch.sigmoid(logits)
+```
+
+### Inference on New Proteins
+
+```python
+import torch
+import numpy as np
+from pugrail import PUGRAIL
+from pugrail.utils import parse_pdb_as_graph
+
+# Load trained model
+model = PUGRAIL(in_dim=1332, hid=128, gnn_layers=3)
+model.load_state_dict(torch.load("model.pt"))
+model.eval()
+
+# Prepare input
+esm_emb = np.load("protein.npy")
+graph = parse_pdb_as_graph("protein.pdb", esm_residue=esm_emb)
+
+# Predict
+with torch.no_grad():
+    logit = model(graph)
+    prob = torch.sigmoid(logit).item()
+    
+print(f"Protective antigen probability: {prob:.4f}")
+```
+
+## Model Architecture
+
+```
+Input: Protein sequence + Predicted 3D structure
+       ↓
+┌──────────────────────────────────────────┐
+│  Node Features:                          │
+│  - One-hot amino acid encoding (20-dim)  │
+│  - ESM embedding (projected to 256-dim)  │
+│  - Positional encoding (32-dim)          │
+└──────────────────────────────────────────┘
+       ↓
+┌──────────────────────────────────────────┐
+│  Graph Construction:                     │
+│  - Sequential edges (i → i+1)            │
+│  - Structure edges (Cα-Cα < 8Å)          │
+└──────────────────────────────────────────┘
+       ↓
+┌──────────────────────────────────────────┐
+│  Edge-Type Separation GNN:               │
+│  - Sequence branch (GCN × 3 layers)      │
+│  - Structure branch (GCN × 3 layers)     │
+│  - Learnable α fusion                    │
+└──────────────────────────────────────────┘
+       ↓
+┌──────────────────────────────────────────┐
+│  Attention Pooling:                      │
+│  - Gated attention weights               │
+│  - Top-k residue aggregation             │
+│  - Mean/Max pooling fusion               │
+└──────────────────────────────────────────┘
+       ↓
+┌──────────────────────────────────────────┐
+│  Prediction Head:                        │
+│  - MLP classifier                        │
+│  - Sigmoid activation                    │
+└──────────────────────────────────────────┘
+       ↓
+Output: Protective antigen probability
+```
+
+## Benchmark Results
+
+### Performance on PAPReC Benchmark
+
+| Dataset | AUROC | AUPRC |
+|---------|-------|-------|
+| Bcipep | 0.82 | 0.96 |
+| HLA | 0.75 | 0.44 |
+| Protein | 0.96 | 0.96 |
+| Epitope | 0.86 | 0.86 |
+
+### Performance on ImmunoDB Benchmark
+
+| Dataset | AUROC | AUPRC | F1 |
+|---------|-------|-------|-----|
+| Bacteria | 0.89 | 0.82 | 0.77 |
+| Virus | 0.97 | 0.97 | 0.92 |
+| Tumor | 0.87 | 0.81 | 0.77 |
+
+## Citation
+
+If you use PU-GRAIL in your research, please cite:
+
+```bibtex
+@article{jeon2025pugrail,
+  title={PU-GRAIL: A Graph Neural Network Framework for Protective Antigen Prediction under Positive-Unlabeled Learning},
+  author={Jeon, Jaemin and others},
+  journal={Bioinformatics},
+  year={2025}
+}
+```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Contact
+
+- **Author**: Jaemin Jeon
+- **Email**: inukjung@snu.ac.kr
+- **GitHub**: [https://github.com/jaeminjj/PU-GRAIL](https://github.com/jaeminjj/PU-GRAIL)
+
+## Acknowledgments
+
+- ESM (Evolutionary Scale Modeling) by Meta AI
+- PyTorch Geometric team
+- AlphaFold2, ESMFold, and OmegaFold developers
+
