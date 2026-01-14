@@ -1,24 +1,237 @@
-# PU-GRAIL
+# PU-GRAIL: Graph Neural Network for Protective Antigen Prediction
 
-**PU-GRAIL**: A Graph Neural Network Framework for Protective Antigen Prediction under Positive-Unlabeled Learning
+We propose PU-GRAIL, a graph neural network framework for protective antigen prediction under positive-unlabeled (PU) learning. By integrating protein language model embeddings with predicted 3D structures, PU-GRAIL effectively learns residue-level representations and improves antigenicity prediction performance.
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-1.12+-red.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+This repository contains the implementation of PU-GRAIL. The pipeline consists of three main steps: data preprocessing (ESM embedding & structure prediction), graph dataset preparation, and PU-GRAIL training.
 
-## Overview
+## Data Preparation
 
-PU-GRAIL is a graph neural network framework that integrates protein language model embeddings with predicted 3D structures for protective antigen prediction. The model addresses two key challenges in computational vaccinology:
+The input data requires three components:
 
-1. **Positive-Unlabeled (PU) Learning**: Handles the inherent label uncertainty where unannotated proteins may contain undiscovered protective antigens
-2. **Structure-Sequence Integration**: Captures both local sequence context and long-range structural contacts critical for epitope recognition
+1. **CSV file** with the following columns:
+   - `id_short`: Protein identifier (e.g., 'protein_001')
+   - `label`: Binary label (1 = protective antigen, 0 = unlabeled/negative)
+   - `fold`: Cross-validation fold number (e.g., 0, 1, 2, ...)
+   - `split`: Data split indicator ('train', 'valid', 'test')
 
-### Key Features
+2. **PDB files**: Predicted or experimental protein structures
+   - Directory containing `{id_short}.pdb` files
 
-- **Edge-type separation**: Separately encodes sequential and structural connectivity with learnable fusion weights
-- **ESM embedding projection**: Projects high-dimensional ESM embeddings to a lower-dimensional space for efficient learning
-- **Attention-based pooling**: Identifies important residues contributing to antigenicity
-- **Multiple loss functions**: Combines PU-AUC loss, node separation loss, and graph contrastive loss
+3. **ESM embeddings**: Pre-computed ESM embeddings
+   - Directory containing `{id_short}.npy` files
+   - Shape: (L+2, D) where L is sequence length and D is embedding dimension
+
+### Example CSV format
+
+```csv
+id_short,label,fold,split
+protein_001,1,0,train
+protein_002,0,0,train
+protein_003,1,0,valid
+protein_004,0,0,test
+...
+```
+
+Place your data files in the following structure:
+```
+data/
+└── MyDataset/
+    ├── fold/
+    │   └── index_all_folds.csv
+    ├── pdb/
+    │   ├── protein_001.pdb
+    │   ├── protein_002.pdb
+    │   └── ...
+    └── esm/
+        ├── protein_001.npy
+        ├── protein_002.npy
+        └── ...
+```
+
+## Pipeline
+
+### 1. Generate ESM Embeddings
+
+Run the `generate_esm_embeddings.py` script to generate ESM embeddings for protein sequences:
+
+```bash
+python scripts/generate_esm_embeddings.py --fasta_path data/MyDataset/sequences.fasta --output_dir data/MyDataset/esm --model_name esm2_t33_650M_UR50D --device_num 0
+```
+
+This script performs the following steps:
+- Loading the ESM2 model
+- Computing residue-level embeddings for each protein sequence
+- Saving embeddings as `.npy` files
+
+#### ESM Embedding Generation Script
+
+`scripts/generate_esm_embeddings.py`: This script generates ESM embeddings for protein sequences.
+
+**Usage**
+```bash
+python scripts/generate_esm_embeddings.py [--fasta_path FASTA_PATH] [--output_dir OUTPUT_DIR]
+                                          [--model_name MODEL_NAME] [--device_num DEVICE_NUM]
+                                          [--batch_size BATCH_SIZE]
+```
+
+**Arguments**
+- `--fasta_path`: Path to FASTA file containing protein sequences (required)
+- `--output_dir`: Output directory for ESM embeddings (default: "data/esm")
+- `--model_name`: ESM model name (default: "esm2_t33_650M_UR50D")
+- `--device_num`: CUDA device number (default: 0)
+- `--batch_size`: Batch size for inference (default: 1)
+
+**Example**
+```bash
+python scripts/generate_esm_embeddings.py --fasta_path data/MyDataset/sequences.fasta --output_dir data/MyDataset/esm --model_name esm2_t33_650M_UR50D --device_num 0 --batch_size 1
+```
+
+### 2. Generate Structure Predictions
+
+Run the `generate_structures.py` script to predict protein structures using ESMFold:
+
+```bash
+python scripts/generate_structures.py --fasta_path data/MyDataset/sequences.fasta --output_dir data/MyDataset/pdb --device_num 0
+```
+
+This script performs the following steps:
+- Loading the ESMFold model
+- Predicting 3D structures for each protein sequence
+- Saving structures as `.pdb` files
+
+#### Structure Prediction Script
+
+`scripts/generate_structures.py`: This script predicts protein structures using ESMFold.
+
+**Usage**
+```bash
+python scripts/generate_structures.py [--fasta_path FASTA_PATH] [--output_dir OUTPUT_DIR]
+                                      [--device_num DEVICE_NUM]
+```
+
+**Arguments**
+- `--fasta_path`: Path to FASTA file containing protein sequences (required)
+- `--output_dir`: Output directory for PDB files (default: "data/pdb")
+- `--device_num`: CUDA device number (default: 0)
+
+**Example**
+```bash
+python scripts/generate_structures.py --fasta_path data/MyDataset/sequences.fasta --output_dir data/MyDataset/pdb --device_num 0
+```
+
+### 3. PU-GRAIL Training
+
+Run the `train.py` script to train the PU-GRAIL model:
+
+```bash
+python -m pugrail.train --csv_path data/MyDataset/fold/index_all_folds.csv --pdb_dir data/MyDataset/pdb --esm_dir data/MyDataset/esm --output_dir results/MyDataset --cache_dir data/MyDataset/cache --batch_size 16 --lr 1e-4 --epochs 100 --patience 5 --hidden_dim 128 --gnn_layers 3 --esm_proj_dim 256 --pos_encoding_dim 32 --pu_loss puauc --task_loss_weight 1.0 --node_loss_weight 0.3 --contrastive_loss_weight 0.1 --early_metric aupr --seed 42 --device cuda --tag pugrail_exp1
+```
+
+This script trains the PU-GRAIL model using the preprocessed data. The trained model and evaluation results will be saved in the `results/MyDataset` directory.
+
+#### PU-GRAIL Training Script
+
+`pugrail/train.py`: This script performs training of the PU-GRAIL model and saves the trained model.
+
+**Usage**
+```bash
+python -m pugrail.train [--csv_path CSV_PATH] [--pdb_dir PDB_DIR] [--esm_dir ESM_DIR]
+                        [--output_dir OUTPUT_DIR] [--cache_dir CACHE_DIR]
+                        [--batch_size BATCH_SIZE] [--lr LR] [--epochs EPOCHS]
+                        [--patience PATIENCE] [--hidden_dim HIDDEN_DIM]
+                        [--gnn_layers GNN_LAYERS] [--esm_proj_dim ESM_PROJ_DIM]
+                        [--pos_encoding_dim POS_ENCODING_DIM] [--pu_loss PU_LOSS]
+                        [--task_loss_weight TASK_LOSS_WEIGHT]
+                        [--node_loss_weight NODE_LOSS_WEIGHT]
+                        [--contrastive_loss_weight CONTRASTIVE_LOSS_WEIGHT]
+                        [--early_metric EARLY_METRIC] [--seed SEED]
+                        [--device DEVICE] [--tag TAG]
+```
+
+**Arguments**
+- `--csv_path`: Path to CSV file with columns: id_short, label, fold, split (required)
+- `--pdb_dir`: Directory containing PDB structure files (required)
+- `--esm_dir`: Directory containing ESM embedding files (.npy) (required)
+- `--output_dir`: Output directory for results and models (default: "./output")
+- `--cache_dir`: Cache directory for processed datasets (default: "./cache")
+- `--batch_size`: Batch size for training (default: 16)
+- `--lr`: Learning rate (default: 1e-4)
+- `--epochs`: Maximum number of training epochs (default: 100)
+- `--patience`: Early stopping patience (default: 5)
+- `--hidden_dim`: Hidden dimension of GNN layers (default: 128)
+- `--gnn_layers`: Number of GNN layers (default: 3)
+- `--esm_proj_dim`: ESM projection dimension (default: 256)
+- `--pos_encoding_dim`: Positional encoding dimension (default: 32)
+- `--pu_loss`: PU loss type: "puauc", "nnpu", or "bce" (default: "puauc")
+- `--task_loss_weight`: Weight for task loss (default: 1.0)
+- `--node_loss_weight`: Weight for node separation loss (default: 0.3)
+- `--contrastive_loss_weight`: Weight for graph contrastive loss (default: 0.1)
+- `--early_metric`: Metric for early stopping: "aupr" or "auroc" (default: "aupr")
+- `--seed`: Random seed (default: 42)
+- `--device`: Device: "cuda" or "cpu" (default: "cuda")
+- `--tag`: Experiment tag for output files (default: "pugrail")
+
+**Example**
+Run training with default parameters:
+```bash
+python -m pugrail.train --csv_path data/MyDataset/fold/index_all_folds.csv --pdb_dir data/MyDataset/pdb --esm_dir data/MyDataset/esm --output_dir results/MyDataset --tag exp1
+```
+
+Run training with custom parameters:
+```bash
+python -m pugrail.train --csv_path data/MyDataset/fold/index_all_folds.csv --pdb_dir data/MyDataset/pdb --esm_dir data/MyDataset/esm --output_dir results/MyDataset --batch_size 32 --lr 5e-5 --epochs 200 --patience 10 --hidden_dim 256 --gnn_layers 4 --pu_loss puauc --task_loss_weight 1.0 --node_loss_weight 0.5 --contrastive_loss_weight 0.2 --seed 123 --tag exp2_custom
+```
+
+### 4. Prediction on New Proteins
+
+Run the `predict.py` script to predict antigenicity for new proteins:
+
+```bash
+python -m pugrail.predict --model_path results/MyDataset/models/pugrail_fold0_best.pt --pdb_path data/new_protein.pdb --esm_path data/new_protein.npy --output_path predictions/new_protein.json --hidden_dim 128 --gnn_layers 3 --threshold 0.5 --device cuda
+```
+
+#### Prediction Script
+
+`pugrail/predict.py`: This script performs prediction on new proteins using a trained model.
+
+**Usage**
+```bash
+# Single protein prediction
+python -m pugrail.predict [--model_path MODEL_PATH] [--pdb_path PDB_PATH]
+                          [--esm_path ESM_PATH] [--output_path OUTPUT_PATH]
+                          [--hidden_dim HIDDEN_DIM] [--gnn_layers GNN_LAYERS]
+                          [--threshold THRESHOLD] [--device DEVICE]
+
+# Batch prediction
+python -m pugrail.predict [--model_path MODEL_PATH] [--input_csv INPUT_CSV]
+                          [--pdb_dir PDB_DIR] [--esm_dir ESM_DIR]
+                          [--output_path OUTPUT_PATH] [--threshold THRESHOLD]
+                          [--device DEVICE]
+```
+
+**Arguments**
+- `--model_path`: Path to trained model checkpoint (required)
+- `--pdb_path`: Path to PDB file for single protein prediction
+- `--esm_path`: Path to ESM embedding file for single protein prediction
+- `--input_csv`: CSV file with id_short column for batch prediction
+- `--pdb_dir`: Directory containing PDB files for batch prediction
+- `--esm_dir`: Directory containing ESM embeddings for batch prediction
+- `--output_path`: Output path for predictions (default: "predictions.json")
+- `--hidden_dim`: Hidden dimension (must match training) (default: 128)
+- `--gnn_layers`: Number of GNN layers (must match training) (default: 3)
+- `--threshold`: Classification threshold (default: 0.5)
+- `--device`: Device: "cuda" or "cpu" (default: "cuda")
+
+**Example**
+Single protein prediction:
+```bash
+python -m pugrail.predict --model_path results/MyDataset/models/pugrail_fold0_best.pt --pdb_path data/query_protein.pdb --esm_path data/query_protein.npy --output_path predictions/query_result.json --threshold 0.5 --device cuda
+```
+
+Batch prediction:
+```bash
+python -m pugrail.predict --model_path results/MyDataset/models/pugrail_fold0_best.pt --input_csv data/query_proteins.csv --pdb_dir data/query_pdb --esm_dir data/query_esm --output_path predictions/batch_results.csv --threshold 0.5 --device cuda
+```
 
 ## Installation
 
@@ -41,175 +254,16 @@ pip install -e .
 
 ```bash
 # Install PyTorch (adjust for your CUDA version)
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Install PyTorch Geometric
 pip install torch-geometric
 
 # Install other dependencies
 pip install numpy pandas scikit-learn biopython
-```
 
-## Data Preparation
-
-### Required Input Files
-
-1. **CSV file** with columns:
-   - `id_short`: Protein identifier
-   - `label`: Binary label (1 = protective antigen, 0 = unlabeled/negative)
-   - `fold`: Cross-validation fold number
-   - `split`: Data split (train/valid/test)
-
-2. **PDB files**: Predicted or experimental protein structures
-   - Directory containing `{id_short}.pdb` files
-
-3. **ESM embeddings**: Pre-computed ESM embeddings
-   - Directory containing `{id_short}.npy` files
-   - Shape: (L+2, D) where L is sequence length and D is embedding dimension
-
-### Example CSV format
-
-```csv
-id_short,label,fold,split
-protein_001,1,0,train
-protein_002,0,0,train
-protein_003,1,0,test
-...
-```
-
-### Generating ESM Embeddings
-
-```python
-import torch
-import esm
-import numpy as np
-
-# Load ESM model
-model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
-batch_converter = alphabet.get_batch_converter()
-model.eval()
-
-# Generate embedding for a sequence
-sequence = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
-data = [("protein", sequence)]
-batch_labels, batch_strs, batch_tokens = batch_converter(data)
-
-with torch.no_grad():
-    results = model(batch_tokens, repr_layers=[33])
-    embeddings = results["representations"][33].numpy()
-
-# Save embedding
-np.save("protein.npy", embeddings[0])  # Shape: (L+2, 1280)
-```
-
-### Generating Structure Predictions
-
-You can use ESMFold, OmegaFold, or AlphaFold2 to predict structures:
-
-```python
-import esm
-
-# Using ESMFold
-model = esm.pretrained.esmfold_v1()
-model = model.eval().cuda()
-
-sequence = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
-with torch.no_grad():
-    output = model.infer_pdb(sequence)
-
-with open("protein.pdb", "w") as f:
-    f.write(output)
-```
-
-## Usage
-
-### Training
-
-```bash
-python -m pugrail.train \
-    --csv_path /path/to/data.csv \
-    --pdb_dir /path/to/pdb/ \
-    --esm_dir /path/to/esm/ \
-    --output_dir /path/to/output/ \
-    --batch_size 16 \
-    --epochs 100 \
-    --lr 1e-4 \
-    --pu_loss puauc \
-    --hidden_dim 128 \
-    --gnn_layers 3
-```
-
-### Command Line Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--csv_path` | required | Path to CSV file with data |
-| `--pdb_dir` | required | Directory containing PDB files |
-| `--esm_dir` | required | Directory containing ESM embeddings |
-| `--output_dir` | `./output` | Output directory |
-| `--batch_size` | 16 | Batch size |
-| `--lr` | 1e-4 | Learning rate |
-| `--epochs` | 100 | Maximum epochs |
-| `--patience` | 5 | Early stopping patience |
-| `--hidden_dim` | 128 | Hidden dimension |
-| `--gnn_layers` | 3 | Number of GNN layers |
-| `--pu_loss` | `puauc` | Loss type: `puauc`, `nnpu`, or `bce` |
-| `--task_loss_weight` | 1.0 | Weight for task loss |
-| `--node_loss_weight` | 0.3 | Weight for node separation loss |
-| `--contrastive_loss_weight` | 0.1 | Weight for contrastive loss |
-
-### Python API
-
-```python
-from pugrail import PUGRAIL, ProteinGraphDataset
-import torch
-from torch_geometric.loader import DataLoader
-
-# Load dataset
-dataset = ProteinGraphDataset(
-    df=df_train,
-    pdb_dir="/path/to/pdb/",
-    esm_dir="/path/to/esm/",
-)
-
-# Create model
-model = PUGRAIL(
-    in_dim=dataset[0].x.shape[1],
-    hid=128,
-    gnn_layers=3,
-    use_edge_separation=True,
-)
-
-# Forward pass
-loader = DataLoader(dataset, batch_size=16)
-for batch in loader:
-    logits = model(batch)
-    probs = torch.sigmoid(logits)
-```
-
-### Inference on New Proteins
-
-```python
-import torch
-import numpy as np
-from pugrail import PUGRAIL
-from pugrail.utils import parse_pdb_as_graph
-
-# Load trained model
-model = PUGRAIL(in_dim=1332, hid=128, gnn_layers=3)
-model.load_state_dict(torch.load("model.pt"))
-model.eval()
-
-# Prepare input
-esm_emb = np.load("protein.npy")
-graph = parse_pdb_as_graph("protein.pdb", esm_residue=esm_emb)
-
-# Predict
-with torch.no_grad():
-    logit = model(graph)
-    prob = torch.sigmoid(logit).item()
-    
-print(f"Protective antigen probability: {prob:.4f}")
+# Optional: Install ESM for embedding generation
+pip install fair-esm
 ```
 
 ## Model Architecture
@@ -291,13 +345,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-- **Author**: Jaemin Jeon
-- **Email**: inukjung@snu.ac.kr
-- **GitHub**: [https://github.com/jaeminjj/PU-GRAIL](https://github.com/jaeminjj/PU-GRAIL)
-
-## Acknowledgments
-
-- ESM (Evolutionary Scale Modeling) by Meta AI
-- PyTorch Geometric team
-- AlphaFold2, ESMFold, and OmegaFold developers
-
+- Jaemin Jeon, jaeminjj@snu.ac.kr
